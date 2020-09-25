@@ -1,0 +1,115 @@
+#multimodal script cleaned up for Seurat 3
+
+
+library(Seurat)
+library(Matrix)
+library(dplyr)
+library(viridis)
+library(ggplot2)
+library(sctransform)
+
+#better visibility color palette for 7 clusters (0-6)
+color6<-c("#008dff","#ed9f59","#f95e5e",
+          "#00c353","#e13ebe","#28d6cd","#8463cc")
+#Read in the non-TE (RNA) dataset
+  gc13.data<- Read10X(data.dir = "/mnt/DATA/LairdLab/daniel/e13.5/outs/filtered_gene_bc_matrices/mm10TE")
+#Read in the TE dataset
+  gc13te.data<-Read10X(data.dir="/mnt/DATA/LairdLab/daniel/e13.5TE/outs/filtered_gene_bc_matrices/mm10transposome")
+
+  
+#normal workflow for RNA, E13.5 analysis
+gc13<-CreateSeuratObject(counts = gc13.data, project = "gc13", min.cells = 3, min.features = 200)
+gc13[["percent.mt"]] <- PercentageFeatureSet(gc13, pattern = "^mt-")
+VlnPlot(gc13, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+gc13 <- subset(gc13, subset= nFeature_RNA>200 & nFeature_RNA <Inf & percent.mt < 20 & Pou5f1 > 10, slot="counts")
+gc13 <- SCTransform(gc13, vars.to.regress = "percent.mt", verbose = T, variable.features.n =4000, return.only.var.genes = F)
+gc13 <- RunPCA(gc13, verbose = T)
+ElbowPlot(gc13)
+gc13 <- RunUMAP(gc13, dims = 1:30, verbose = T, n.neighbors=15,min.dist = 0.2)
+gc13 <- FindNeighbors(gc13, dims = 1:30, verbose = T)
+gc13 <- FindClusters(gc13, verbose = T, resolution=1.1)
+DimPlot(gc13, label = F, cols = color6, pt.size = 2)
+VlnPlot(gc13, cols=color6, c("Nanos2", "Rhox9"))
+
+  
+  
+#trim the gcte.data to match gc.data
+  gc.data.trimmed<- gc13.data[ , colnames(gc13.data)%in%colnames(gc13te.data)]
+  gcte.data.trimmed<- gc13te.data[ , colnames(gc13te.data)%in%colnames(gc13.data)]
+
+
+#MD color = e13ebe
+#AP color = 28d6cd
+#recluster multimodal to match the transcriptome-only total cluster number (7)
+
+#20200925 revision DN
+gc.mm <- CreateSeuratObject(counts = gc.data.trimmed, 
+                            project = "10Xe13.5TE")
+gc.mm[["percent.mt"]] <- PercentageFeatureSet(gc.mm, pattern = "^mt-")
+gc.mm[["TE"]] <- CreateAssayObject(counts = gcte.data.trimmed)
+gc.mm <- subset(gc.mm, subset= nFeature_RNA>200 & nFeature_RNA <Inf & percent.mt < 20 & Pou5f1 > 10, slot='counts')
+#if using SCTransform, omit normalization step 
+#gc.mmTE.RNA<-NormalizeData(gc.mm, assay = "RNA", normalization.method = "CLR")
+
+#the following is for clustering based only on RNA
+gc.mm.RNA<-SCTransform(gc.mm, assay="RNA",vars.to.regress = "percent.mt", verbose=T)
+gc.mm.RNA<-RunPCA(gc.mm.RNA, verbose=T)
+ElbowPlot(gc.mm.RNA)
+gc.mm.RNA<-RunUMAP(gc.mm.RNA, dims = 1:30, verbose = T, n.neighbors=15,min.dist = 0.2)
+gc.mm.RNA <- FindNeighbors(gc.mm.RNA, dims = 1:30, verbose = T)
+gc.mm.RNA <- FindClusters(gc.mm.RNA, verbose = T, resolution=0.9) #res 0.9 yields 7 clusters
+VlnPlot(gc.mm.RNA, c("Nanos2", "te_L1Md-A"))
+VlnPlot(gc.mm.RNA, c("Nanos2", "Rhox6"))
+#Nanos2 high = Cluster 4, Rhox6 high = Cluster 6
+DimPlot(gc.mm.RNA)
+DimPlot(gc.mm.RNA, cols = c("gray", "gray", "gray","gray","#e13ebe",  "gray",  "#28d6cd"))
+  #Check vs standard RNA clustering
+  VlnPlot(gc13, c("Nanos2", "Rhox6"))
+  #Nanos2 high = Cluster 4, Rhox6 high = Cluster 5
+  #This differs slightly from old analysis, likely due to SCTransform vs standard Normalize
+  DimPlot(gc13)
+  DimPlot(gc13, cols=c("gray", "gray", "gray", "gray", "#e13ebe", "#28d6cd", "gray"))
+
+#Generate uncolored VlnPlots
+VlnPlot(gc.mm.RNA, "Nanos2",cols = c("gray","gray", "gray", "gray", "gray","gray", "gray"))
+VlnPlot(gc.mm.RNA, "Rhox6",cols = c("gray","gray", "gray", "gray", "gray","gray", "gray"))
+VlnPlot(gc.mm.RNA, "te_L1Md-A",cols = c("gray","gray", "gray", "gray", "gray","gray", "gray"))
+VlnPlot(gc.mm.RNA, "te_L1Md-T",cols = c("gray","gray", "gray", "gray", "gray","gray", "gray"))
+
+#Find RNA markers for RNA-clusters
+gc.mm.RNA.RNAmarkers<-FindAllMarkers(gc.mm.RNA, assay="RNA",only.pos = F, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(gc.mm.RNA.RNAmarkers, file = "gc.mm.RNAmarkers.csv")
+#Find TE markers for RNA-clusters
+gc.mm.RNA.TE.markers<-FindAllMarkers(gc.mm.RNA, assay="TE", only.pos = F, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(gc.mmRNA.TEmarkers, file = "gc.mm.RNA.TEmarkers.csv")
+
+
+#the following is for clustering based only on TE
+gc.mm.TE<-SCTransform(gc.mm, assay="TE",vars.to.regress = "percent.mt", verbose=T)
+gc.mm.TE<-RunPCA(gc.mm.TE,verbose=T)
+ElbowPlot(gc.mm.TE)
+gc.mm.TE<-RunUMAP(gc.mm.TE, dims = 1:30, verbose = T, n.neighbors=15,min.dist = 0.2)
+gc.mm.TE <- FindNeighbors(gc.mm.TE, dims = 1:30, verbose = T)
+gc.mm.TE <- FindClusters(gc.mm.TE, verbose = T, resolution=1.1) #res 0.7 yields 7 clusters
+DimPlot(gc.mm.TE)
+VlnPlot(gc.mm.TE, c("Nanos2", "te_L1Md-A"))
+VlnPlot(gc.mm.TE, c("Rhox6", "te_L1Md-A"))
+# Nanos2 high = Cluster 0
+?FindAllMarkers
+#Generate uncolored VlnPlots
+VlnPlot(gc.mm.TE, "Nanos2",cols = c("gray","gray", "gray", "gray", "gray","gray", "gray"))
+VlnPlot(gc.mm.TE, "Rhox6",cols = c("gray","gray", "gray", "gray", "gray","gray", "gray"))
+VlnPlot(gc.mm.TE, "te_L1Md-A",cols = c("gray","gray", "gray", "gray", "gray","gray", "gray"))
+VlnPlot(gc.mm.TE, "te_L1Md-T",cols = c("gray","gray", "gray", "gray", "gray","gray", "gray"))    
+
+#Find RNA markers for TE-clusters
+gc.mm.TE.RNAmarkers<-FindAllMarkers(gc.mm.TE, assay="RNA", only.pos = F, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(gc.mm.TE.RNAmarkers, file = "gc.mm.TE.RNAmarkers.csv")
+#Find TE markers for TE-clusters
+gc.mm.TE.TEmarkers<-FindAllMarkers(gc.mm.TE, assay="TE", only.pos = F, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(gc.mm.TE.TEmarkers, file = "gc.mm.TE.TEmarkers.csv")
+
+
+
+#Fetch data for Source data
+write.csv(FetchData(object = gc.mm.RNA, vars = c("ident","Nanos2","Rhox6","te_L1Md-A", "te_L1Md-T")), file="SourcedatacountsF10b.csv")
