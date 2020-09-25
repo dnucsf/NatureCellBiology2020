@@ -1,0 +1,166 @@
+this script is to merge a 12.5 and 13.5 dataset and regress on the timepoints to compare similarities (overlaps) in cells from two different timepoints
+
+
+#install Seurat
+install.packages('Seurat')
+library(Seurat)
+
+library(Seurat)
+library(dplyr)
+library(Matrix)
+library(KernSmooth)
+library(viridis)
+
+#magma color palette for an expression gradient
+colmagma<- c("#000004FF", "#07071DFF", "#160F3BFF", "#29115AFF", "#400F73FF", "#56147DFF", "#6B1D81FF", "#802582FF", "#952C80FF",
+"#AB337CFF", "#C03A76FF", "#D6456CFF", "#E85362FF", "#F4685CFF", "#FA815FFF", "#FD9A6AFF", "#FEB37BFF", "#FECC8FFF", "#FDE4A6FF", "#FCFDBFFF")
+colmagmarev<-rev(colmagma)
+
+
+# Load the GC only dataset and go through default analysis
+gc.data <- Read10X(data.dir = "C:/Users/d/Desktop/10x_data/e13.5/outs/raw_gene_bc_matrices/mm10TE")
+gc <- CreateSeuratObject(raw.data = gc.data, min.cells = 3, min.genes = 200, 
+                         project = "10X_e13_5")                   
+mito.genes <- grep(pattern = "^mt-", x = rownames(x = gc@data), value = TRUE)
+percent.mito <- colSums(gc@raw.data[mito.genes, ])/colSums(gc@raw.data)
+gc <- AddMetaData(object = gc, metadata = percent.mito, col.name = "percent.mito")
+VlnPlot(object = gc, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3)
+par(mfrow = c(1, 2))
+GenePlot(object = gc, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = gc, gene1 = "nUMI", gene2 = "nGene")
+gc <- NormalizeData(object = gc, normalization.method = "LogNormalize", 
+                       scale.factor = 10000)
+gc <- FindVariableGenes(object = gc, mean.function = ExpMean, dispersion.function = LogVMR, 
+                           do.plot = T, x.low.cutoff=0.0125, x.high.cutoff = 5, y.cutoff = 0.5)
+length(x = gc@var.genes)
+gc <- ScaleData(object = gc)
+gc <- RunPCA(object = gc, pcs.compute = 30, pc.genes = gc@var.genes, do.print = TRUE, pcs.print = 1:5, 
+             genes.print = 5, weight.by.var = F)
+PrintPCA(object = gc, pcs.print = 28, genes.print = 5, use.full = FALSE)
+gc <- JackStraw(object = gc, num.pc=30,num.replicate = 100, do.print = FALSE)
+JackStrawPlot(object = gc, PCs = 1:30)
+
+#PC12 is 1
+PCHeatmap(object = gc, pc.use = 1:12, cells.use = 500, do.balanced = TRUE, 
+          label.columns = FALSE, use.full = FALSE)
+#1-11PCs are useful
+gc <- FindClusters(object = gc , reduction.type = "pca", dims.use = 1:11, 
+                   resolution = 1, print.output = 0, save.SNN = TRUE, force.recalc = T)
+gc  <- RunTSNE(object = gc , dims.use = 1:11, do.fast = T, perplexity=100)
+TSNEPlot(object = gc, do.label = F, label.size=10)
+
+
+#To regress on timepoint, we will have to add a metadata slot for timepoint
+  gc <- AddMetaData(object = gc, metadata = "13.5", col.name = "timepoint")
+#alternatively, can use the orig.ident in ths case it is "10X_e13_5"
+  #in contrast, for e12.5 this data would be 
+  
+#Now we read in the e12.5 dataaset
+  gc12.data <- Read10X(data.dir = "C:/Users/d/Desktop/10x_data/e12.5/raw_gene_bc_matrices/mm10TE/")
+  gc12 <- CreateSeuratObject(raw.data = gc12.data, min.cells = 3, min.genes = 200, 
+                           project = "10X_e12_5")  
+  mito.genes12 <- grep(pattern = "^mt-", x = rownames(x = gc12@data), value = TRUE)
+  percent.mito12 <- colSums(gc12@raw.data[mito.genes12, ])/colSums(gc12@raw.data)
+  gc12 <- AddMetaData(object = gc12, metadata = percent.mito12, col.name = "percent.mito")
+  VlnPlot(object = gc12, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3)
+  
+  par(mfrow = c(1, 2))
+  GenePlot(object = gc12, gene1 = "nUMI", gene2 = "percent.mito")
+  GenePlot(object = gc12, gene1 = "nUMI", gene2 = "nGene")
+  
+
+  
+#Merging 12.5 and 13.5
+gc.combined<-MergeSeurat(object1 = gc, object2 = gc12, add.cell.id1 = "13.5", add.cell.id2 = "12.5", project = "12.5_13.5_combined")
+gc.combined <- FindVariableGenes(object = gc.combined, mean.function = ExpMean, dispersion.function = LogVMR, 
+                        do.plot = T, x.low.cutoff=0.0125, x.high.cutoff = 5, y.cutoff = 0.5)
+length(x = gc.combined@var.genes)
+#here we run regression including the labels for the two timepoints
+gc.combined <- ScaleData(object = gc.combined, vars.to.regress = c("nUMI", "percent.mito", "orig.ident"))
+gc.combined <- RunPCA(object = gc.combined, pc.genes = gc.combined@var.genes, do.print = TRUE, pcs.print = 1:5, 
+               genes.print = 5)
+
+#can't do pc.use=1:30 because out of bounds?
+PCHeatmap(object = gc.combined, pc.use = 1:15, cells.use = 500, do.balanced = TRUE, 
+          label.columns = FALSE, use.full = FALSE)  
+gc.combined <- JackStraw(object = gc.combined, num.replicate = 100, do.print = FALSE)
+JackStrawPlot(object = gc.combined, PCs = 1:20)
+PCElbowPlot(object = gc.combined)
+gc.combined <- FindClusters(object = gc.combined, reduction.type = "pca", dims.use = 1:10, 
+                     resolution = 0.9, print.output = 0, save.SNN = TRUE)
+PrintFindClustersParams(object = gc.combined)
+gc.combined <- RunTSNE(object = gc.combined, dims.use = 1:10, do.fast = TRUE, perplexity=100)
+TSNEPlot(object = gc.combined, pt.size = 3)
+
+#get E12.5 and E13.5 cell IDs
+e12.5cells<-WhichCells(gc12)
+e12.5cells<-paste0("12.5_", e12.5cells)
+e13.5cells<-paste0("13.5_", WhichCells(gc))
+
+
+
+TSNEPlot(gc.combined)
+
+
+
+FeaturePlot(gc.combined, "Trp53", cols.use = colmagmarev, min.cutoff = "q1", max.cutoff="q99", pt.size=3)
+
+#Trp53ids refers to the cell identities making up AP population, primarily marked by high Rhox6/9 expression. This section is deprecated as this population is referred to as AP  rather than Trp53
+    #load in Trp53 id cells from e13.5
+  Trp53cells<-as.list.data.frame(Trp53ids)
+  as.character(Trp53cells)
+  Trp53cellids<-unlist(Trp53cells)
+  e13.5Trp53cellids<-paste0("13.5_", Trp53cellids)
+  TSNEPlot(gc.combined)
+
+  #set ids to e13.5 trp53 hi
+  gc.combined.p53only<- plyr::mapvalues(x = gc.combined@ident, from = current.cluster.ids, to = new.cluster.ids)
+  TSNEPlot(object = gc.combined.p53only, do.label = TRUE, pt.size = 0.5)
+    #from vignette
+      #first we add a p53 ID, giving us 14 (13+1) clusters
+      gc.combined.p53only<-SetIdent(gc.combined, cells.use=e13.5Trp53cellids, ident.use="e13.5 Trp53 high")
+      #next we must "delete" the other 13 clusters by setting their IDs to "0"
+      current.cluster.ids <- c(0, 1, 2, 3, 4, 5, 6, 7,8,9,10,11,12, "e13.5 Trp53 high")
+      new.cluster.ids <- c("0","0","0","0","0","0","0","0","0","0","0","0", "0","e13.5 Trp53 high")
+      #this assigns the new IDs to the existing ones
+      gc.combined.p53only@ident <- plyr::mapvalues(x = gc.combined.p53only@ident, from = current.cluster.ids, to = new.cluster.ids)
+      #now we can plot the combined datasets and highlight just the Trp53 high cells
+      TSNEPlot(object = gc.combined.p53only, do.label = F, pt.size = 3, colors.use = c("gainsboro", "darkturquoise"))
+      ?TSNEPlot
+      
+      
+      
+      
+      #now we want to reset ids to e12.5 and e13.5
+ 
+      PrintFindClustersParams(object = gc.combined)
+      gc.combined<-SetIdent(gc.combined, cells.use=e12.5cells, ident.use="e12.5")
+      
+      
+      current.cluster.ids <- c(0, 1)
+      new.cluster.ids <- c("0","e12.5")
+      gc.combined@ident <- plyr::mapvalues(x = gc.combined@ident, from = current.cluster.ids, to = new.cluster.ids)
+      TSNEPlot(gc.combined)
+      #from vignette
+      current.cluster.ids <- c(0, 1, 2, 3, 4, 5, 6, 7,8,9,10,11,12,"Trp53hi")
+      new.cluster.ids <- c("0","0","0","0","0","0","0","0","0","0","0","0", "0","Trp53hi")
+      gc.combined@ident <- plyr::mapvalues(x = gc.combined@ident, from = current.cluster.ids, to = new.cluster.ids)
+      TSNEPlot(object = gc.combined, do.label = TRUE, pt.size = 0.5)
+
+      
+  #set IDs for 12.5, 13.5 to distinguish the E12.5 from E13.5 cells in the combined dataset
+      gc.combined.dual<-SetIdent(gc.combined, cells.use=e12.5cells, ident.use="e12.5")
+      current.cluster.ids <- c(0, 1, 2, 3, 4, 5, 6, 7,8,9,10,11,12, "e12.5")
+      new.cluster.ids <- c("0","0","0","0","0","0","0","0","0","0","0","0", "0","e12.5")
+      gc.combined.dual@ident <- plyr::mapvalues(x = gc.combined.dual@ident, from = current.cluster.ids, to = new.cluster.ids)
+      TSNEPlot(gc.combined.dual, pt.size=2, colors.use = c("tomato", "skyblue4"))
+      
+      ?TSNEPlot
+  
+      
+library(scales)
+library(viridis) 
+show_col(viridis_pal()(20))      
+
+FeaturePlot(gc.combined, "Rhox6", cols.use = viridis_pal(option="magma", direction=-1)(20), pt.size = 2,min.cutoff = "q1", max.cutoff="q99")
+?scale_color_viridis
