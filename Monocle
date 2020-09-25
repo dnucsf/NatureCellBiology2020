@@ -1,0 +1,207 @@
+library(cellrangerRkit)
+packageVersion("cellrangerRkit")
+
+install.packages("reshape")
+library(reshape)
+library(monocle)
+library(viridis)
+
+#load dataset into Monocle
+cellranger_pipestance_path<-"C:/Users/d/Desktop/10x_data/e13.5"
+gbm <- load_cellranger_matrix(cellranger_pipestance_path)
+fd <- fData(gbm)
+colnames(fd)[2] <- "gene_short_name"
+gbm_cds <- newCellDataSet(exprs(gbm),
+                          phenoData = new("AnnotatedDataFrame", data = pData(gbm)),
+                          featureData = new("AnnotatedDataFrame", data = fd),
+                          lowerDetectionLimit = 0.5,
+                          expressionFamily = negbinomial.size())
+
+gbm_cds <- estimateSizeFactors(gbm_cds)
+gbm_cds <- estimateDispersions(gbm_cds)
+
+gbm_cds <- detectGenes(gbm_cds, min_expr = 0.1)
+print(head(fData(gbm_cds)))
+expressed_genes <- row.names(subset(fData(gbm_cds),
+                                    num_cells_expressed >= 10))
+print(head(pData(gbm_cds)))
+#rename gbm_cds to HSMM for easier tracking with Monocle vignette
+HSMM<-gbm_cds
+
+#plotting mRNA distribution across cells
+pData(HSMM)$Total_mRNAs <- Matrix::colSums(exprs(HSMM))
+HSMM <- HSMM[,pData(HSMM)$Total_mRNAs < 1e6]
+upper_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) +
+                     2*sd(log10(pData(HSMM)$Total_mRNAs)))
+lower_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) -
+                     2*sd(log10(pData(HSMM)$Total_mRNAs)))
+qplot(Total_mRNAs, data = pData(HSMM), geom =
+        "density") +
+  geom_vline(xintercept = lower_bound) +
+  geom_vline(xintercept = upper_bound)
+
+#store HSMM unfiltered
+HSMMunfiltered<-HSMM
+
+HSMM <- HSMM[,pData(HSMM)$Total_mRNAs > lower_bound &
+               pData(HSMM)$Total_mRNAs < upper_bound]
+HSMM <- detectGenes(HSMM, min_expr = 0.05)
+?detectGenes
+# Log-transform each value in the expression matrix.
+L <- log(exprs(HSMM[expressed_genes,]))
+
+# Standardize each gene, so that they are all on the same scale,
+# Then melt the data with plyr so we can plot it easily
+melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))
+
+# Plot the distribution of the standardized gene expression values.
+qplot(value, geom = "density", data = melted_dens_df) +
+  stat_function(fun = dnorm, size = 0.5, color = 'red') +
+  xlab("Standardized log(FPKM)") +
+  ylab("Density")
+
+#clustering cells unsupervised
+disp_table <- dispersionTable(HSMM)
+unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)
+HSMM <- setOrderingFilter(HSMM, unsup_clustering_genes$gene_id)
+plot_ordering_genes(HSMM)
+
+# HSMM@auxClusteringData[["tSNE"]]$variance_explained <- NULL
+plot_pc_variance_explained(HSMM, return_all = F) # norm_method='log'
+
+
+#is num_dim = PCA?
+HSMM <- reduceDimension(HSMM, max_components = 2, num_dim = 9,
+                        reduction_method = 'tSNE', verbose = T)
+HSMM <- clusterCells(HSMM, num_clusters = 8)
+plot_cell_clusters(HSMM_psuedo, 1, 2, color = "Cluster",
+                   markers = c("Trp53", "Rhox6", "Lefty2", "Mki67","Nanos2", "Mael", "Tdrd5", "Piwil2"))
+
+
+
+#ALTERNATIVE CHOICE FOR ORDERING GENES
+    HSMM_psuedo <- detectGenes(HSMM, min_expr = 0.05)
+    
+    fData(HSMM_psuedo)$use_for_ordering <-
+      fData(HSMM_psuedo)$num_cells_expressed > 0.05 * ncol(HSMM_psuedo)
+    plot_pc_variance_explained(HSMM_psuedo, return_all = F)
+      # We can look at a scree plot and determine how many pca dimensions are wanted based on whether or not there is a significant gap between that component 
+        #and the component after it. By selecting only the high loading PCs, we effectively only focus on the more interesting biological variations.
+    ## based on that, maybe pick 6 as num dim
+    
+    HSMM_psuedo <- reduceDimension(HSMM_psuedo,
+                                max_components = 2,
+                                norm_method = 'log',
+                                num_dim = 6,
+                                reduction_method = 'tSNE',
+                                verbose = T)
+
+        HSMM_psuedo <- clusterCells(HSMM_psuedo, verbose = F, num_clusters = 10)
+        plot_cell_clusters(HSMM_psuedo, color_by = 'as.factor(Cluster)')
+    
+    #user-defined thresholding    
+        plot_rho_delta(HSMM_psuedo, rho_threshold = 15, delta_threshold = 8 )
+        HSMM_psuedo <- clusterCells(HSMM_psuedo,
+                                 rho_threshold = 15,
+                                 delta_threshold = 8,
+                                 skip_rho_sigma = T,
+                                 verbose = F)
+        plot_cell_clusters(HSMM_psuedo, color_by = 'as.factor(Cluster)')
+
+  #explanation for rhodelta plots
+  #in the decision plot, rho means local density of that while delta means the distance of the current cell 
+    #to another cell with higher density. Therefore the outliers on the decision plot normally corresponds 
+    #to the density peaks. You would like to select relative high values of rho and delta as the threshold 
+    #to get those outliers.
+
+    #In addition, in Monocle 2.6.1, we provide a knn-network based clustering method which used by Seurat,
+    #phenograph and other packages (you can set method = "louvain") . It normally returns more clusters but 
+    #performs much faster and can deal with large datasets.
+
+        #my notes: the thresholds are the minima, you want the high values of rho/delta as the "best"
+        
+        #try to classify the Pou5f1 high cells to only pseudotime them (i.e. exclude Pou5f1 low) 
+             row.names(subset(fData(HSMM_psuedo), gene_short_name == "Pou5f1"))
+              cth<-newCellTypeHierarchy()
+              cth<-addCellType(cth, "Pou5f1 high", classify_func=function(x){x[Pou5f1_id,]>0})
+              HSMM_pseudo_Pou5f1 <-classifyCells(HSMM_psuedo, cth)
+              
+              #shows number of cells in oct4 vs oct4low
+              table(pData(HSMM_pseudo_Pou5f1)$CellType)
+              
+              
+              Pou5f1_high<-HSMM_pseudo_Pou5f1[, pData(HSMM_pseudo_Pou5f1)$CellType == "Pou5f1 high"]
+              #moving forward Pou5f1_high is the filtered CellDataSet
+                  
+              
+              #Put filtered CellDataSet through "Alternative choices for ordering genes - Ordering based on genes that differ between clusters"
+                Pou5f1_high <- detectGenes(Pou5f1_high, min_expr = 0.1)
+                fData(Pou5f1_high)$use_for_ordering <-
+                  fData(Pou5f1_high)$num_cells_expressed > 0.05 * ncol(Pou5f1_high)
+              
+              #Next is PCA analysis to identify variance explained by each PC, will generate a scree plot
+                plot_pc_variance_explained(Pou5f1_high, return_all = F)
+              
+              
+              #Run reduceDimension with tSNE
+                #num_dim determined by scree plot, 5 seems to be the biggest gap
+                Pou5f1_high <- reduceDimension(Pou5f1_high,
+                                            max_components = 2,
+                                            norm_method = 'log',
+                                            num_dim = 5,
+                                            reduction_method = 'tSNE',
+                                            verbose = T)
+              #Run clustering
+                #here you can tweak the number of clusters you expect to find with num_clusters=
+                Pou5f1_high <- clusterCells(Pou5f1_high, verbose = F, num_clusters = 10)
+                
+              #Check clustering
+                plot_cell_clusters(Pou5f1_high, color_by = 'as.factor(Cluster)')
+                  #the tsne looks weird so we will check marker expression (feature plot)
+                    plot_cell_clusters(Pou5f1_high, color_by = 'as.factor(Cluster)', markers = c("Trp53", "Rhox6", "Lefty2", "Mki67","Nanos2", "Mael", "Tdrd5", "Piwil2"), option="magma", direction=-1)
+                
+                
+              #Plot the decision plot for manual thresholding
+                #rho and delta thresholds used
+                plot_rho_delta(Pou5f1_high, rho_threshold = 2, delta_threshold = 4 )
+                
+                #based on what we see we manually threshold rho and delta as follows:
+                    #I am going to just stick with the default clustercells
+                Pou5f1_high <- clusterCells(Pou5f1_high,
+                                         rho_threshold = 2,
+                                         delta_threshold = 4,
+                                         skip_rho_sigma = T,
+                                         verbose = F)
+                
+                
+                  #What is this code??
+                  Pou5f1_high_HSMM_expressed_genes <-  row.names(subset(fData(Pou5f1_high),num_cells_expressed >= 10))
+                  
+                  #differential gene expression test to extract genes that distinguish these clusters: 
+                  Pou5f1_high_clustering_DEG_genes <-
+                    differentialGeneTest(Pou5f1_high[Pou5f1_high_HSMM_expressed_genes,],
+                                         fullModelFormulaStr = '~Cluster',
+                                         cores = 3)
+                  
+                  Pou5f1_high_HSMM_ordering_genes <-
+                    row.names(Pou5f1_high_clustering_DEG_genes)[order(Pou5f1_high_clustering_DEG_genes$qval)][1:1000]
+                  
+                  Pou5f1_high <-
+                    setOrderingFilter(Pou5f1_high,
+                                      ordering_genes = Pou5f1_high_HSMM_ordering_genes)
+                  
+                  #is this step necessary? or did we already reduce dimension by tsne
+                  Pou5f1_high <-
+                    reduceDimension(Pou5f1_high, method = 'DDRTree')
+                  
+                  Pou5f1_high <-
+                    orderCells(Pou5f1_high)
+                  
+                  plot_cell_trajectory(Pou5f1_high, color_by = "Cluster", cell_size = 3)
+                  
+                  #to display gene expression on pseudotime
+                  plot_cell_trajectory(Pou5f1_high, color_by = "Cluster", markers = "Rhox9", use_color_gradient = T, option="magma", cell_size = 1, direction =-1, begin=0.05, end=0.95)
+                  plot_cell_trajectory(Pou5f1_high, color_by = "Cluster", markers = "Nanos2", use_color_gradient = T, option="magma", cell_size = 1, direction =-1, begin=0.05, end=0.95)
+                  plot_cell_trajectory(Pou5f1_high, color_by = "Cluster", markers = "Trp53", use_color_gradient = T, option="magma", cell_size = 1, direction =-1, begin=0.05, end=0.95)
+                  plot_cell_trajectory(Pou5f1_high, color_by = "Cluster", markers = "Bax", use_color_gradient = T, option="magma", cell_size = 1, direction =-1, begin=0.05, end=0.95)
+                  
