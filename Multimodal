@@ -110,6 +110,6 @@ gc.mm.TE.TEmarkers<-FindAllMarkers(gc.mm.TE, assay="TE", only.pos = F, min.pct =
 write.csv(gc.mm.TE.TEmarkers, file = "gc.mm.TE.TEmarkers.csv")
 
 
-
+ 
 #Fetch data for Source data
 write.csv(FetchData(object = gc.mm.RNA, vars = c("ident","Nanos2","Rhox6","te_L1Md-A", "te_L1Md-T")), file="SourcedatacountsF10b.csv")
